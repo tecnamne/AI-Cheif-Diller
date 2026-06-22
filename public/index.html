@@ -1,0 +1,56 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trading Demo Chatbot</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Trading Platform Demo Bot</div>
+    <span class="badge">Demo</span>
+  </header>
+
+  <main class="layout">
+    <section class="panel chat-panel">
+      <div class="panel-header">
+        <h1>AI Chat</h1>
+        <div id="connectionState" class="badge">Connecting…</div>
+      </div>
+      <div id="chatWindow" class="chat-window"></div>
+      <form id="chatForm" class="composer" autocomplete="off">
+        <textarea id="messageInput" rows="2" placeholder="Ask about scanner status, alerts, top winners..." required></textarea>
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+    </section>
+
+    <aside class="panel control-panel">
+      <section class="control-card">
+        <h2>Scanner</h2>
+        <div id="scannerStatus" class="small-grid">
+          <p>Loading status…</p>
+        </div>
+        <div class="actions">
+          <button id="refreshStatusBtn">Refresh status</button>
+          <button id="runScanBtn">Run scan now</button>
+        </div>
+      </section>
+
+      <section class="control-card">
+        <h2>Global scanner alerts</h2>
+        <button id="refreshAlertsBtn">Reload alerts</button>
+        <div id="alertList" class="list"></div>
+      </section>
+
+      <section class="control-card">
+        <h2>Scanner alerts by tenant</h2>
+        <button id="refreshTenantAlertsBtn">Reload tenant alerts</button>
+        <div id="tenantAlertList" class="list"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

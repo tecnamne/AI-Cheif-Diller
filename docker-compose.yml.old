@@ -1,0 +1,131 @@
+﻿# ============================================
+# AI Support Bot - Docker Compose
+# ============================================
+# Р­С‚РѕС‚ С„Р°Р№Р» РјРѕР¶РЅРѕ РёРЅС‚РµРіСЂРёСЂРѕРІР°С‚СЊ РІ РѕСЃРЅРѕРІРЅРѕР№ docker-compose РїР»Р°С‚С„РѕСЂРјС‹
+# РёР»Рё РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РѕС‚РґРµР»СЊРЅРѕ РґР»СЏ С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ
+
+version: '3.8'
+
+services:
+  # AI Chatbot Backend API
+  ai-chatbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-chatbot-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      # Server
+      - NODE_ENV=production
+      - PORT=3001
+      
+      # CORS - СѓРєР°Р¶РёС‚Рµ СЂРµР°Р»СЊРЅС‹Рµ РґРѕРјРµРЅС‹ С„СЂРѕРЅС‚РµРЅРґР°
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://chatbot-api.example.com}
+      
+      # AI APIs
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      
+      # platform service (РІРЅСѓС‚СЂРµРЅРЅРёР№ URL РІ docker network)
+      # РЎРµСЂРІРёСЃ РЅР°Р·С‹РІР°РµС‚СЃСЏ "server" Рё СЃР»СѓС€Р°РµС‚ РЅР° РїРѕСЂС‚Сѓ 7777
+      - PLATFORM_SERVICE_URL=${PLATFORM_SERVICE_URL:-http://platform-service:7777}
+      
+      # Tenant (multi-tenancy) - СѓРєР°Р¶РёС‚Рµ РёРјСЏ Р±СЂРѕРєРµСЂР° Рё РѕРєСЂСѓР¶РµРЅРёРµ
+      - BROKER_NAME=${BROKER_NAME:-Demo Broker}
+      - ENVIRONMENT=${ENVIRONMENT:-develop}
+      
+      # Scanner (optional)
+      - SCANNER_ENABLED=${SCANNER_ENABLED:-true}
+      - SCANNER_MORNING_HOUR=${SCANNER_MORNING_HOUR:-9}
+      - SCANNER_EVENING_HOUR=${SCANNER_EVENING_HOUR:-21}
+      
+      # MongoDB Configuration
+      # РњРѕР¶РЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ СЃСѓС‰РµСЃС‚РІСѓСЋС‰СѓСЋ MongoDB РѕСЃРЅРѕРІРЅРѕРіРѕ РїСЂРѕРµРєС‚Р°
+      # URI С„РѕСЂРјР°С‚: mongodb://user:password@host:port
+      - MONGODB_URI=${MONGODB_URI:-mongodb://root:root@mongo:27017}
+      - MONGODB_DATABASE=${MONGODB_DATABASE:-chatbot_demo}
+      
+      # Session Configuration
+      - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-30}
+      - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-10}
+    volumes:
+      # RAG documentation (read-only)
+      - ./docs:/app/docs:ro
+      # Logs (persistent)
+      - ./logs:/app/logs
+    networks:
+      - chatbot-network
+    # РћР¶РёРґР°РµРј Р·Р°РїСѓСЃРє MongoDB РѕСЃРЅРѕРІРЅРѕРіРѕ РїСЂРѕРµРєС‚Р°
+    depends_on:
+      - mongo
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # MongoDB Database
+  mongo:
+    image: mongo:5
+    container_name: ai-chatbot-mongo
+    restart: always
+    volumes:
+      - ./data/mongo:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=${MONGODB_DATABASE:-chatbot_demo}
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER:-root}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-root}
+    ports:
+      - "27017:27017"
+    networks:
+      - chatbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  # Р”Р»СЏ standalone СЂРµР¶РёРјР° СЃРѕР·РґР°РµРј РІРЅСѓС‚СЂРµРЅРЅСЋСЋ СЃРµС‚СЊ
+  # Р”Р»СЏ РёРЅС‚РµРіСЂР°С†РёРё СЃ РѕСЃРЅРѕРІРЅС‹Рј compose РёСЃРїРѕР»СЊР·СѓР№С‚Рµ external: true
+  chatbot-network:
+    # Р”Р»СЏ standalone СЂРµР¶РёРјР° (РєРѕРіРґР° mongo РІ СЌС‚РѕРј Р¶Рµ compose):
+    # (СЂР°СЃРєРѕРјРјРµРЅС‚РёСЂСѓР№С‚Рµ РґР»СЏ standalone)
+    # driver: bridge
+    
+    # Р”Р»СЏ РёРЅС‚РµРіСЂР°С†РёРё СЃ РѕСЃРЅРѕРІРЅС‹Рј compose (РєРѕРіРґР° mongo РІ РґСЂСѓРіРѕРј compose):
+    # (РёСЃРїРѕР»СЊР·СѓР№С‚Рµ РґР»СЏ РёРЅС‚РµРіСЂР°С†РёРё)
+    external: true
+    name: ${DOCKER_NETWORK:-trading-chatbot-demo_network}
+
+# ============================================
+# РРќРўР•Р“Р РђР¦РРЇ РЎ РћРЎРќРћР’РќР«Рњ COMPOSE РџР›РђРўР¤РћР РњР«
+# ============================================
+# Chatbot РёСЃРїРѕР»СЊР·СѓРµС‚ MongoDB РѕСЃРЅРѕРІРЅРѕРіРѕ РїСЂРѕРµРєС‚Р° (СЃРµСЂРІРёСЃ "mongo")
+# Р”Р»СЏ РёРЅС‚РµРіСЂР°С†РёРё РґРѕР±Р°РІСЊС‚Рµ РІ РІР°С€ РѕСЃРЅРѕРІРЅРѕР№ docker-compose.yml:
+#
+# services:
+#   ai-chatbot:
+#     build: ./ai-chatbot-backend
+#     container_name: ai-chatbot-backend
+#     environment:
+#       - GEMINI_API_KEY=${GEMINI_API_KEY}
+#       - PLATFORM_SERVICE_URL=http://platform-service:7777
+#       - MONGODB_URI=mongodb://root:root@mongo:27017
+#       - MONGODB_DATABASE=chatbot_demo
+#       - ALLOWED_ORIGINS=https://chatbot-api.example.com
+#     networks:
+#       - your-network
+#     depends_on:
+#       - mongo
+#       - server
+

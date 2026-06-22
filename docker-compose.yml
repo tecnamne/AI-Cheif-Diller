@@ -1,0 +1,94 @@
+﻿version: '3.8'
+
+services:
+  nginx:
+    image: nginx:alpine
+    container_name: ai-chatbot-nginx
+    restart: always
+    ports:
+      - "7001:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - ai-chatbot
+    networks:
+      - chatbot-network
+
+  ai-chatbot:
+    image: ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}:${VERSION:-latest}
+    container_name: ai-chatbot-backend
+    restart: unless-stopped
+    volumes:
+      - ./docs:/app/docs:ro
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:4173}
+      - DEMO_MODE=${DEMO_MODE:-false}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Backend integration URI
+      - BACKEND_MASTER_URI=${BACKEND_MASTER_URI:-ws://chatbot-gateway:11700}
+      # Core service labels
+      - BROKER_NAME=${BROKER_NAME:-Demo Broker}
+      - ENVIRONMENT=${ENVIRONMENT:-demo}
+      # Scanner settings
+      - SCANNER_ENABLED=${SCANNER_ENABLED:-true}
+      - SCANNER_MORNING_HOUR=${SCANNER_MORNING_HOUR:-9}
+      - SCANNER_EVENING_HOUR=${SCANNER_EVENING_HOUR:-21}
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-root}@mongo:27017/?authSource=admin
+      - MONGODB_DATABASE=${MONGODB_DATABASE:-chatbot_demo}
+      # Session configuration
+      - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-30}
+      - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-10}
+      # Data visibility
+      - ALLOWED_PERSONAL_FIELDS=${ALLOWED_PERSONAL_FIELDS:-}
+      # Data retention
+      - MESSAGE_RETENTION_DAYS=${MESSAGE_RETENTION_DAYS:-0}
+      - SESSION_RETENTION_DAYS=${SESSION_RETENTION_DAYS:-0}
+      - BACKFILL_DATE_FIELDS=${BACKFILL_DATE_FIELDS:-false}
+      # Scanner alert defaults
+      - SCANNER_EXCLUDE_NODES=${SCANNER_EXCLUDE_NODES:-}
+      # JWT secret (required only when DEMO_MODE=false)
+      - "FRESHCHAT_JWT_SECRET=${FRESHCHAT_JWT_SECRET}"
+      
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  mongo:
+    image: mongo:5
+    container_name: ai-chatbot-mongo
+    restart: always
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=${MONGODB_DATABASE:-chatbot_demo}
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USER:-root}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-root}
+    ports:
+      - "27095:27017"
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+networks:
+  chatbot-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:

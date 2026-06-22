@@ -1,0 +1,480 @@
+﻿stages:
+  - build
+  - deploy
+  - trigger
+
+workflow:
+  rules:
+    - when: always
+
+variables:
+  DOCKER_DRIVER: overlay2
+#  DOCKER_TLS_CERTDIR: "/certs"
+  HARBOR_REGISTRY: "${HARBOR_REGISTRY:-registry.example.com}"
+  HARBOR_PROJECT: "${HARBOR_PROJECT:-devops}"
+  IMAGE_NAME: "${IMAGE_NAME:-trading-chatbot-demo}"
+  IMAGE_TAG: "${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}"
+  SSH_USER: ci-runner
+  # VERSION: С‚РµРі РґР»СЏ РѕР±СЂР°Р·Р° вЂ” РёР· CI_COMMIT_TAG (СЂРµР»РёР·) РёР»Рё branch-SHA (РІРµС‚РєР°)
+  VERSION: "${CI_COMMIT_TAG:-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}}"
+
+build_and_push:
+  stage: build
+  image: registry.example.com/docker_helper_images/docker-24.0.9:latest
+  rules:
+    # РќР• Р±РёР»РґРёРј РµСЃР»Рё РїРµСЂРµРґР°РЅ РіРѕС‚РѕРІС‹Р№ IMAGE_TAG (РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ deploy_image)
+    - if: $DEPLOY_IMAGE_TAG
+      when: never
+    # РїСЂРё РѕС‚РєСЂС‹С‚РёРё/РѕР±РЅРѕРІР»РµРЅРёРё MR вЂ” СЃР±РѕСЂРєР° Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё, РѕР±СЂР°Р· РіРѕС‚РѕРІ РґР»СЏ РІС‹РєР°С‚РєРё
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: on_success
+    # РїСЂРё РєРѕРјРјРёС‚Рµ РІ main вЂ” СЃР±РѕСЂРєР° Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: on_success
+    # РїСЂРё Р·Р°РїСѓСЃРєРµ СЃ РєРЅРѕРїРєРё В«Р’С‹РєР°С‚РёС‚СЊВ» (API/web) вЂ” СЃР±РѕСЂРєР° Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "api"
+      when: on_success
+    # РїСЂРё push РІ РґСЂСѓРіСѓСЋ РІРµС‚РєСѓ вЂ” СЃР±РѕСЂРєР° РІСЂСѓС‡РЅСѓСЋ
+    - when: manual
+  services:
+    - name: registry.example.com/docker_helper_images/docker-dind-24.0.9:latest
+      alias: docker
+  tags:
+    - docker-dind-new
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+  #  DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - until docker info; do sleep 1; done
+    - |
+      export HARBOR_REGISTRY="${HARBOR_REGISTRY:-registry.example.com}"
+      export HARBOR_PROJECT="${HARBOR_PROJECT:-devops}"
+      export IMAGE_NAME="${IMAGE_NAME:-trading-chatbot-demo}"
+      export IMAGE_TAG="${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${IMAGE_NAME}"
+      
+      echo "Harbor Registry: ${HARBOR_REGISTRY}"
+      echo "Harbor Project: ${HARBOR_PROJECT}"
+      echo "Image Name: ${IMAGE_NAME}"
+      echo "Full Image Tag: ${IMAGE_TAG}"
+    - echo "Logging in to Harbor registry..."
+    - |
+      if [ -z "$HARBOR_PASSWORD" ] || [ -z "$HARBOR_USERNAME" ] || [ -z "$HARBOR_REGISTRY" ]; then
+        echo "Error: Harbor credentials not set"
+        exit 1
+      fi
+      echo "$HARBOR_PASSWORD" | docker login "$HARBOR_REGISTRY" -u "$HARBOR_USERNAME" --password-stdin
+  script:
+    - |
+      # РљР°Рє РІ deploy: VERSION РёР· CI/CD variables, РёРЅР°С‡Рµ git tag, РёРЅР°С‡Рµ branch-SHA
+      export VERSION="${VERSION:-${CI_COMMIT_TAG:-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}}}"
+      if [ -z "$VERSION" ]; then VERSION="build-${CI_PIPELINE_ID}"; fi
+      FULL_IMAGE_TAG="${IMAGE_TAG}:${VERSION}"
+      LATEST_TAG="${IMAGE_TAG}:latest"
+      
+      echo "Building Docker image: ${FULL_IMAGE_TAG}"
+      docker build -t ${FULL_IMAGE_TAG} -t ${LATEST_TAG} .
+      
+      echo "Pushing image to Harbor: ${FULL_IMAGE_TAG}"
+      docker push ${FULL_IMAGE_TAG}
+      
+      echo "Pushing latest tag: ${LATEST_TAG}"
+      docker push ${LATEST_TAG}
+      
+      echo "вњ… Image successfully pushed to ${FULL_IMAGE_TAG}"
+      echo "вњ… Latest tag: ${LATEST_TAG}"
+  after_script:
+    - docker logout ${HARBOR_REGISTRY}
+
+deploy_develop1:
+  stage: deploy
+  image: registry.example.com/docker_helper_images/docker-24.0.9:latest
+  needs: [build_and_push]
+  rules:
+    # РїСЂРё РґРµРїР»РѕРµ РіРѕС‚РѕРІРѕРіРѕ РѕР±СЂР°Р·Р° РёР· Harbor вЂ” РёСЃРїРѕР»СЊР·СѓРµРј deploy_image, РЅРµ deploy_develop1
+    - if: $DEPLOY_IMAGE_TAG
+      when: never
+    # РїСЂРё РІС‹Р±РѕСЂРµ СЃС‚РµРЅРґР° dev/develop1 РІ В«Р’С‹РєР°С‚РёС‚СЊВ» вЂ” РјРѕР¶РЅРѕ Р·Р°РїСѓСЃРєР°С‚СЊ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РёР»Рё РІСЂСѓС‡РЅСѓСЋ
+    - if: $STAND == "dev" || $STAND == "develop1"
+      when: on_success
+    - if: $CI_COMMIT_TAG
+      when: manual
+    - when: never
+  tags:
+    - docker-new
+  services:
+    - name: registry.example.com/docker_helper_images/docker-dind-24.0.9:latest
+      alias: docker
+  variables:
+    DEPLOY_DIR: "/home/${SSH_USER}/ai-chatbot"
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: tcp://docker:2375
+  before_script:
+#    - apk add --no-cache openssh-client bash
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY_DEVELOP1" | tr -d '\r' > ssh_key_temp
+    - chmod 600 ssh_key_temp
+    - ssh-add ssh_key_temp
+    - rm ssh_key_temp
+    
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+  script:
+    - export HARBOR_REGISTRY="${HARBOR_REGISTRY:-registry.example.com}"
+    - export HARBOR_PROJECT="${HARBOR_PROJECT:-devops}"
+    - export IMAGE_NAME="${IMAGE_NAME:-trading-chatbot-demo}"
+    - export VERSION="${VERSION:-${CI_COMMIT_TAG:-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}}}"
+
+    - echo "Project is ${HARBOR_PROJECT}" 
+    
+    - ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "mkdir -p ${DEPLOY_DIR}"
+    - ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "mkdir -p ${DEPLOY_DIR}/nginx"
+    - ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "mkdir -p ${DEPLOY_DIR}/docs"
+    
+    - scp nginx/default.conf ${SSH_USER}@${SSH_HOST_DEVELOP1}:${DEPLOY_DIR}/nginx/default.conf
+    
+    - scp -r docs/* ${SSH_USER}@${SSH_HOST_DEVELOP1}:${DEPLOY_DIR}/docs/
+    
+    - scp docker-compose.yml ${SSH_USER}@${SSH_HOST_DEVELOP1}:${DEPLOY_DIR}/docker-compose.yml
+    
+    - |
+      ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "
+        cd ${DEPLOY_DIR}
+
+        # Р•СЃР»Рё СЂР°РЅРµРµ Р·Р°РїСѓСЃРєР°Р»Рё deploy_image, override С„РёРєСЃРёСЂСѓРµС‚ СЃС‚Р°СЂС‹Р№ image
+        rm -f docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml
+        
+        echo 'Generating .env file...'
+        echo 'HARBOR_REGISTRY=${HARBOR_REGISTRY}' > .env
+        echo 'HARBOR_PROJECT=${HARBOR_PROJECT}' >> .env
+        echo 'IMAGE_NAME=${IMAGE_NAME}' >> .env
+        echo 'VERSION=${VERSION}' >> .env
+        
+        echo 'GEMINI_API_KEY=${GEMINI_API_KEY}' >> .env
+        echo 'GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}' >> .env
+        echo 'OPENAI_API_KEY=${OPENAI_API_KEY:-}' >> .env
+        echo 'BACKEND_MASTER_URI=${BACKEND_MASTER_URI:-ws://gateway.example.com:11700}' >> .env
+        echo 'BROKER_NAME=${BROKER_NAME:-Demo Broker}' >> .env
+        echo 'ENVIRONMENT=${ENVIRONMENT:-develop}' >> .env
+        echo 'ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://demo-frontend.example.com}' >> .env
+        echo 'MONGO_ROOT_USER=root' >> .env
+        echo 'MONGO_ROOT_PASSWORD=root' >> .env
+        cat .env
+        
+        echo '${HARBOR_PASSWORD}' | docker login '${HARBOR_REGISTRY}' -u '${HARBOR_USERNAME}' --password-stdin
+        
+        echo 'Pulling image...'
+        docker compose -f docker-compose.yml pull ai-chatbot
+        docker compose -f docker-compose.yml pull nginx
+        
+        echo 'Restarting containers...'
+        docker compose -f docker-compose.yml up -d --remove-orphans --pull always --force-recreate ai-chatbot
+
+        echo 'Verifying ai-warn route in running container...'
+        docker exec ai-chatbot-backend sh -lc "grep -n 'ai-warn-tags' /app/routes/chat.routes.js"
+
+        echo 'Verifying ai-warn endpoint status...'
+        AI_WARN_STATUS=$(docker exec ai-chatbot-backend sh -lc "wget -qSO- http://localhost:3001/ai-chat-api/ai-warn-tags/1 -O /dev/null 2>&1 | awk '/HTTP\//{print \$2}' | tail -1")
+        echo "ai-warn endpoint HTTP status: ${AI_WARN_STATUS}"
+        if [ "${AI_WARN_STATUS}" = "404" ]; then
+          echo 'ERROR: ai-warn endpoint is missing in runtime container'
+          exit 1
+        fi
+      "
+
+deploy_staging:
+  stage: deploy
+  image: registry.example.com/docker_helper_images/docker-24.0.9:latest
+  needs: []  # РЅРµ Р¶РґС‘Рј build вЂ” РѕР±СЂР°Р· СѓР¶Рµ СЃРѕР±СЂР°РЅ РІ MR
+  rules:
+    - if: $STAND == "staging"
+    - when: never
+  tags:
+    - docker-new
+  services:
+    - name: registry.example.com/docker_helper_images/docker-dind-24.0.9:latest
+      alias: docker
+  variables:
+    DEPLOY_DIR: "/home/${SSH_USER}/ai-chatbot"
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: tcp://docker:2375    
+  before_script:
+#    - apk add --no-cache openssh-client bash
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY_DEVELOP1" | tr -d '\r' > ssh_key_temp
+    - chmod 600 ssh_key_temp
+    - ssh-add ssh_key_temp
+    - rm ssh_key_temp
+    
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+  script:
+    - export HARBOR_REGISTRY="${HARBOR_REGISTRY:-registry.example.com}"
+    - export HARBOR_PROJECT="${HARBOR_PROJECT:-devops}"
+    - export IMAGE_NAME="${IMAGE_NAME:-trading-chatbot-demo}"
+    - export VERSION="${VERSION:-${CI_COMMIT_TAG:-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}}}"
+
+    - echo "Project is ${HARBOR_PROJECT}" 
+    
+    - ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "mkdir -p ${DEPLOY_DIR}"
+    - ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "mkdir -p ${DEPLOY_DIR}/nginx"
+    - ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "mkdir -p ${DEPLOY_DIR}/docs"
+    
+    - scp nginx/default.conf ${SSH_USER}@${SSH_HOST_DEVELOP1}:${DEPLOY_DIR}/nginx/default.conf
+    
+    - scp -r docs/* ${SSH_USER}@${SSH_HOST_DEVELOP1}:${DEPLOY_DIR}/docs/
+    
+    - scp docker-compose.yml ${SSH_USER}@${SSH_HOST_DEVELOP1}:${DEPLOY_DIR}/docker-compose.yml
+    
+    - |
+      ssh ${SSH_USER}@${SSH_HOST_DEVELOP1} "
+        cd ${DEPLOY_DIR}
+        
+        # deploy_image СЃРѕР·РґР°С‘С‚ override-С„Р°Р№Р» вЂ” РѕРЅ РїРµСЂРµРєСЂС‹РІР°РµС‚ image РёР· .env
+        rm -f docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml
+        
+        echo 'Generating .env file...'
+        echo 'HARBOR_REGISTRY=${HARBOR_REGISTRY}' > .env
+        echo 'HARBOR_PROJECT=${HARBOR_PROJECT}' >> .env
+        echo 'IMAGE_NAME=${IMAGE_NAME}' >> .env
+        echo 'VERSION=${VERSION}' >> .env
+        
+        echo 'GEMINI_API_KEY=${GEMINI_API_KEY}' >> .env
+        echo 'GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}' >> .env
+        echo 'OPENAI_API_KEY=${OPENAI_API_KEY:-}' >> .env
+        echo 'BACKEND_MASTER_URI=${BACKEND_MASTER_URI:-ws://gateway.example.com:11700}' >> .env
+        echo 'BROKER_NAME=${BROKER_NAME:-Demo Broker}' >> .env
+        echo 'ENVIRONMENT=${ENVIRONMENT:-develop}' >> .env
+        echo 'ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://demo-frontend.example.com}' >> .env
+        echo 'MONGO_ROOT_USER=root' >> .env
+        echo 'MONGO_ROOT_PASSWORD=root' >> .env
+        echo 'ALLOWED_PERSONAL_FIELDS=${ALLOWED_PERSONAL_FIELDS:-}' >> .env
+        echo 'SCANNER_EXCLUDE_NODES=${SCANNER_EXCLUDE_NODES:-}' >> .env
+        
+        cat .env
+        
+        echo '${HARBOR_PASSWORD}' | docker login '${HARBOR_REGISTRY}' -u '${HARBOR_USERNAME}' --password-stdin
+        
+        echo 'Pulling image...'
+        docker compose -f docker-compose.yml pull ai-chatbot
+        docker compose -f docker-compose.yml pull nginx
+        
+        echo 'Restarting containers...'
+        docker compose -f docker-compose.yml up -d --remove-orphans --pull always --force-recreate ai-chatbot
+
+        echo 'Verifying ai-warn route in running container...'
+        docker exec ai-chatbot-backend sh -lc "grep -n 'ai-warn-tags' /app/routes/chat.routes.js"
+
+        echo 'Verifying ai-warn endpoint status...'
+        AI_WARN_STATUS=$(docker exec ai-chatbot-backend sh -lc "wget -qSO- http://localhost:3001/ai-chat-api/ai-warn-tags/1 -O /dev/null 2>&1 | awk '/HTTP\//{print \$2}' | tail -1")
+        echo "ai-warn endpoint HTTP status: ${AI_WARN_STATUS}"
+        if [ "${AI_WARN_STATUS}" = "404" ]; then
+          echo 'ERROR: ai-warn endpoint is missing in runtime container'
+          exit 1
+        fi
+      "
+
+deploy_production:
+  stage: deploy
+  image: registry.example.com/docker_helper_images/docker-24.0.9:latest
+  needs: []  # РЅРµ Р¶РґС‘Рј build вЂ” РѕР±СЂР°Р· СѓР¶Рµ СЃРѕР±СЂР°РЅ РІ MR
+  rules:
+    - if: $STAND == "production"
+    - when: never
+  tags:
+    - docker-new
+  services:
+    - name: registry.example.com/docker_helper_images/docker-dind-24.0.9:latest
+      alias: docker
+  variables:
+    DEPLOY_DIR: "/home/${SSH_USER}/ai-chatbot"
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: tcp://docker:2375       
+  before_script:
+#    - apk add --no-cache openssh-client bash
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY_PRODUCTION" | tr -d '\r' > ssh_key_temp
+    - chmod 600 ssh_key_temp
+    - ssh-add ssh_key_temp
+    - rm ssh_key_temp
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+  script:
+    - export HARBOR_REGISTRY="${HARBOR_REGISTRY:-registry.example.com}"
+    - export HARBOR_PROJECT="${HARBOR_PROJECT:-devops}"
+    - export IMAGE_NAME="${IMAGE_NAME:-trading-chatbot-demo}"
+    - export VERSION="${VERSION:-${CI_COMMIT_TAG:-${CI_COMMIT_REF_SLUG}-${CI_COMMIT_SHORT_SHA}}}"
+    - ssh ${SSH_USER}@${SSH_HOST_PRODUCTION} "mkdir -p ${DEPLOY_DIR} ${DEPLOY_DIR}/nginx ${DEPLOY_DIR}/docs"
+    - scp nginx/default.conf ${SSH_USER}@${SSH_HOST_PRODUCTION}:${DEPLOY_DIR}/nginx/default.conf
+    - scp -r docs/* ${SSH_USER}@${SSH_HOST_PRODUCTION}:${DEPLOY_DIR}/docs/
+    - scp docker-compose.yml ${SSH_USER}@${SSH_HOST_PRODUCTION}:${DEPLOY_DIR}/docker-compose.yml
+    - |
+      ssh ${SSH_USER}@${SSH_HOST_PRODUCTION} "
+        cd ${DEPLOY_DIR}
+
+        # Р•СЃР»Рё СЂР°РЅРµРµ Р·Р°РїСѓСЃРєР°Р»Рё deploy_image, override С„РёРєСЃРёСЂСѓРµС‚ СЃС‚Р°СЂС‹Р№ image
+        rm -f docker-compose.override.yml docker-compose.override.yaml compose.override.yml compose.override.yaml
+
+        echo 'HARBOR_REGISTRY=${HARBOR_REGISTRY}' > .env
+        echo 'HARBOR_PROJECT=${HARBOR_PROJECT}' >> .env
+        echo 'IMAGE_NAME=${IMAGE_NAME}' >> .env
+        echo 'VERSION=${VERSION}' >> .env
+        echo 'GEMINI_API_KEY=${GEMINI_API_KEY}' >> .env
+        echo 'GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}' >> .env
+        echo 'OPENAI_API_KEY=${OPENAI_API_KEY:-}' >> .env
+        echo 'BACKEND_MASTER_URI=${BACKEND_MASTER_URI:-ws://gateway.example.com:11700}' >> .env
+        echo 'BROKER_NAME=${BROKER_NAME:-Demo Broker}' >> .env
+        echo 'ENVIRONMENT=${ENVIRONMENT:-develop}' >> .env
+        echo 'ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://demo-frontend.example.com}' >> .env
+        echo 'MONGO_ROOT_USER=root' >> .env
+        echo 'MONGO_ROOT_PASSWORD=root' >> .env
+        echo 'ALLOWED_PERSONAL_FIELDS=${ALLOWED_PERSONAL_FIELDS:-}' >> .env
+        echo 'SCANNER_EXCLUDE_NODES=${SCANNER_EXCLUDE_NODES:-}' >> .env
+        echo '${HARBOR_PASSWORD}' | docker login '${HARBOR_REGISTRY}' -u '${HARBOR_USERNAME}' --password-stdin
+        docker compose -f docker-compose.yml pull ai-chatbot nginx
+        docker compose -f docker-compose.yml up -d --remove-orphans --pull always --force-recreate ai-chatbot
+
+        echo 'Verifying ai-warn route in running container...'
+        docker exec ai-chatbot-backend sh -lc "grep -n 'ai-warn-tags' /app/routes/chat.routes.js"
+
+        echo 'Verifying ai-warn endpoint status...'
+        AI_WARN_STATUS=$(docker exec ai-chatbot-backend sh -lc "wget -qSO- http://localhost:3001/ai-chat-api/ai-warn-tags/1 -O /dev/null 2>&1 | awk '/HTTP\//{print \$2}' | tail -1")
+        echo "ai-warn endpoint HTTP status: ${AI_WARN_STATUS}"
+        if [ "${AI_WARN_STATUS}" = "404" ]; then
+          echo 'ERROR: ai-warn endpoint is missing in runtime container'
+          exit 1
+        fi
+      "
+
+
+# Р”РµРїР»РѕР№ РіРѕС‚РѕРІРѕРіРѕ РѕР±СЂР°Р·Р° РёР· Harbor (Р±РµР· СЃР±РѕСЂРєРё)
+# Р—Р°РїСѓСЃРє: РїРµСЂРµРґР°С‚СЊ РїРµСЂРµРјРµРЅРЅС‹Рµ DEPLOY_IMAGE_TAG Рё STAND
+# РџСЂРёРјРµСЂ: DEPLOY_IMAGE_TAG=registry.example.com/devops/trading-chatbot-demo:main-abc1234
+deploy_image:
+  stage: deploy
+  image: registry.example.com/docker_helper_images/docker-24.0.9:latest
+  needs: []
+  rules:
+    - if: $DEPLOY_IMAGE_TAG && $STAND == "dev"
+      when: on_success
+    - if: $DEPLOY_IMAGE_TAG && $STAND == "develop1"
+      when: on_success
+    - if: $DEPLOY_IMAGE_TAG && $STAND == "staging"
+      when: on_success
+    - if: $DEPLOY_IMAGE_TAG && $STAND == "production"
+      when: on_success
+    - when: never
+  tags:
+    - docker-new
+  services:
+    - name: registry.example.com/docker_helper_images/docker-dind-24.0.9:latest
+      alias: docker
+  variables:
+    DEPLOY_DIR: "/home/${SSH_USER}/ai-chatbot"
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: tcp://docker:2375       
+  before_script:
+#    - apk add --no-cache openssh-client bash
+    - eval $(ssh-agent -s)
+    - |
+      # Р’С‹Р±РёСЂР°РµРј SSH РєР»СЋС‡ РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ СЃС‚РµРЅРґР°
+      if [ "$STAND" = "production" ]; then
+        echo "$SSH_PRIVATE_KEY_PRODUCTION" | tr -d '\r' > ssh_key_temp
+        export SSH_TARGET_HOST="$SSH_HOST_PRODUCTION"
+      else
+        echo "$SSH_PRIVATE_KEY_DEVELOP1" | tr -d '\r' > ssh_key_temp
+        export SSH_TARGET_HOST="$SSH_HOST_DEVELOP1"
+      fi
+    - chmod 600 ssh_key_temp
+    - ssh-add ssh_key_temp
+    - rm ssh_key_temp
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+  script:
+    - |
+      echo "Deploying image: ${DEPLOY_IMAGE_TAG}"
+      echo "Target stand: ${STAND}"
+      
+      # РћРїСЂРµРґРµР»СЏРµРј С…РѕСЃС‚
+      if [ "$STAND" = "production" ]; then
+        SSH_TARGET_HOST="$SSH_HOST_PRODUCTION"
+      else
+        SSH_TARGET_HOST="$SSH_HOST_DEVELOP1"
+      fi
+      
+      # РР·РІР»РµРєР°РµРј registry РёР· IMAGE_TAG
+      REGISTRY=$(echo "$DEPLOY_IMAGE_TAG" | cut -d'/' -f1)
+      
+      ssh ${SSH_USER}@${SSH_TARGET_HOST} "mkdir -p ${DEPLOY_DIR} ${DEPLOY_DIR}/nginx ${DEPLOY_DIR}/docs"
+      scp nginx/default.conf ${SSH_USER}@${SSH_TARGET_HOST}:${DEPLOY_DIR}/nginx/default.conf
+      scp -r docs/* ${SSH_USER}@${SSH_TARGET_HOST}:${DEPLOY_DIR}/docs/
+      scp docker-compose.yml ${SSH_USER}@${SSH_TARGET_HOST}:${DEPLOY_DIR}/docker-compose.yml
+      
+      ssh ${SSH_USER}@${SSH_TARGET_HOST} "
+        cd ${DEPLOY_DIR}
+        
+        echo 'DEPLOY_IMAGE_TAG=${DEPLOY_IMAGE_TAG}' > .env
+        echo 'GEMINI_API_KEY=${GEMINI_API_KEY}' >> .env
+        echo 'GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.0-flash}' >> .env
+        echo 'OPENAI_API_KEY=${OPENAI_API_KEY:-}' >> .env
+        echo 'BACKEND_MASTER_URI=${BACKEND_MASTER_URI:-ws://gateway.example.com:11700}' >> .env
+        echo 'BROKER_NAME=${BROKER_NAME:-Demo Broker}' >> .env
+        echo 'ENVIRONMENT=${ENVIRONMENT:-develop}' >> .env
+        echo 'ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://demo-frontend.example.com}' >> .env
+        echo 'MONGO_ROOT_USER=root' >> .env
+        echo 'MONGO_ROOT_PASSWORD=root' >> .env
+        echo 'ALLOWED_PERSONAL_FIELDS=${ALLOWED_PERSONAL_FIELDS:-}' >> .env
+        echo 'SCANNER_EXCLUDE_NODES=${SCANNER_EXCLUDE_NODES:-}' >> .env
+        
+        echo '${HARBOR_PASSWORD}' | docker login '${REGISTRY}' -u '${HARBOR_USERNAME}' --password-stdin
+        
+        echo 'Pulling image: ${DEPLOY_IMAGE_TAG}'
+        docker pull '${DEPLOY_IMAGE_TAG}'
+        
+        echo 'Updating docker-compose to use specific image...'
+        # РЎРѕР·РґР°С‘Рј override РґР»СЏ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ РєРѕРЅРєСЂРµС‚РЅРѕРіРѕ РѕР±СЂР°Р·Р°
+        echo 'services:' > docker-compose.override.yml
+        echo '  ai-chatbot:' >> docker-compose.override.yml
+        echo '    image: ${DEPLOY_IMAGE_TAG}' >> docker-compose.override.yml
+        
+        echo 'Restarting containers...'
+        docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --remove-orphans --pull always --force-recreate ai-chatbot
+
+        echo 'Verifying ai-warn route in running container...'
+        docker exec ai-chatbot-backend sh -lc "grep -n 'ai-warn-tags' /app/routes/chat.routes.js"
+
+        echo 'Verifying ai-warn endpoint status...'
+        AI_WARN_STATUS=$(docker exec ai-chatbot-backend sh -lc "wget -qSO- http://localhost:3001/ai-chat-api/ai-warn-tags/1 -O /dev/null 2>&1 | awk '/HTTP\//{print \$2}' | tail -1")
+        echo "ai-warn endpoint HTTP status: ${AI_WARN_STATUS}"
+        if [ "${AI_WARN_STATUS}" = "404" ]; then
+          echo 'ERROR: ai-warn endpoint is missing in runtime container'
+          exit 1
+        fi
+      "
+      
+      echo "вњ… Deployed ${DEPLOY_IMAGE_TAG} to ${STAND}"
+
+# Trigger pipeline in igit-develop repository (С‚РѕР»СЊРєРѕ РїСЂРё РІС‹РєР°С‚РєРµ РІ production)
+trigger_igit_develop:
+  stage: trigger
+  rules:
+    - if: $STAND == "production"
+      when: on_success
+    - when: never
+  trigger:
+    project: bp/igit-develop
+    branch: main
+    strategy: depend
+  variables:
+    UPSTREAM_PROJECT_NAME: "ai-support"
+    UPSTREAM_BRANCH: $CI_COMMIT_REF_NAME
+    UPSTREAM_COMMIT_SHORT_SHA: $CI_COMMIT_SHORT_SHA
+
